@@ -1,28 +1,39 @@
-// require('dotenv').config();
-// or, if using ES modules:
 import dotenv from 'dotenv';
-dotenv.config(path);
+import { fileURLToPath } from 'url';
+import path from 'path';
+
+// Configure dotenv for ES modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+dotenv.config({ path: path.join(__dirname, '.env') });
+
 console.log('DEBUG: MONGODB_URI from .env is:', process.env.MONGODB_URI);
-process.env.MONGODB_URI = 'mongodb+srv://gujaratparasports:paraSports07@parasports.sc63qgr.mongodb.net/?retryWrites=true&w=majority&appName=ParaSports';
+// Fallback MongoDB URI if .env is not loaded
+if (!process.env.MONGODB_URI) {
+  process.env.MONGODB_URI = 'mongodb+srv://gujaratparasports:paraSports07@parasports.sc63qgr.mongodb.net/?retryWrites=true&w=majority&appName=ParaSports';
+}
 
 import express from 'express';
 import mongoose from 'mongoose';
 import cors from 'cors';
-import path from 'path';
-import { fileURLToPath } from 'url';
 import compression from 'compression';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
+import fs from 'fs';
 
 // Import routes
 import playerRoutes from './routes/playerRoutes.js';
-import idcardRoutes from './routes/idcardRoutes.js';    
+import idcardRoutes from './routes/idcardRoutes.js';
+import userRoutes from './routes/userRoutes.js';
+import emailRoutes from './routes/emailRoutes.js';
 
 // Import middleware
 import { errorHandler } from './middleware/errorHandler.js';
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 5000;
+
+app.set('trust proxy', 1); // trust first proxy
 
 // Security and performance middleware
 app.use(helmet({
@@ -43,7 +54,7 @@ app.use('/api/', limiter);
 
 // CORS configuration
 app.use(cors({
-  origin: process.env.FRONTEND_URL,
+  origin: process.env.FRONTEND_URL || 'http://localhost:5173',
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
@@ -62,8 +73,16 @@ app.use(express.urlencoded({
 }));
 
 // Serve static files with caching
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+
+const uploadsDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
+
+const idcardsDir = path.join(__dirname, 'idcards');
+if (!fs.existsSync(idcardsDir)) {
+  fs.mkdirSync(idcardsDir, { recursive: true });
+}
 
 app.use('/uploads', express.static(path.join(__dirname, 'uploads'), {
   maxAge: '1d',
@@ -76,9 +95,91 @@ app.use('/idcards', express.static(path.join(__dirname, 'idcards'), {
   lastModified: true
 }));
 
+// Database connection for serverless and regular environments
+let isConnected = false;
+let isConnecting = false;
+
+const connectDB = async () => {
+  if (isConnected) return true;
+  if (isConnecting) {
+    // Wait for existing connection attempt
+    while (isConnecting) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    return isConnected;
+  }
+  
+  isConnecting = true;
+  try {
+    const mongoURI = process.env.MONGODB_URI;
+    if (!mongoURI) {
+      console.warn('⚠️  MONGODB_URI not set, cannot connect to database.');
+      throw new Error('MONGODB_URI not configured');
+    }
+    
+    console.log('🌐 Connecting to MongoDB...');
+    
+    // Connection options for MongoDB
+    const connectionOptions = {
+      maxPoolSize: process.env.VERCEL === '1' ? 10 : 50,
+      minPoolSize: process.env.VERCEL === '1' ? 1 : 10,
+      serverSelectionTimeoutMS: 15000,
+      socketTimeoutMS: 60000,
+      bufferCommands: true, // Always true to prevent connection errors
+      maxIdleTimeMS: 30000,
+      retryWrites: true,
+      w: 'majority',
+      readPreference: 'secondaryPreferred',
+    };
+    
+    await mongoose.connect(mongoURI, connectionOptions);
+    isConnected = true;
+    console.log('✅ Connected to MongoDB successfully!');
+    return true;
+  } catch (error) {
+    console.error('❌ MongoDB connection error:', error.message);
+    isConnected = false;
+    throw error;
+  } finally {
+    isConnecting = false;
+  }
+};
+
+// Middleware to ensure database connection before handling requests
+app.use(async (req, res, next) => {
+  try {
+    await connectDB();
+    next();
+  } catch (error) {
+    console.error('Database connection failed for request:', req.path, error.message);
+    return res.status(503).json({ 
+      success: false, 
+      error: 'Database connection failed',
+      message: 'Please try again later',
+      details: error.message
+    });
+  }
+});
+
 // Routes
 app.use('/api/players', playerRoutes);
 app.use('/api/idcards', idcardRoutes);
+app.use('/api/users', userRoutes);
+app.use('/api', emailRoutes);
+
+// Serve frontend static files (Vite build)
+const distPath = path.join(__dirname, 'dist');
+if (fs.existsSync(distPath)) {
+  app.use(express.static(distPath, {
+    maxAge: '7d',
+    etag: true,
+    lastModified: true
+  }));
+  // Fallback: serve index.html for any non-API route
+  app.get(/^\/(?!api\/).*/, (req, res) => {
+    res.sendFile(path.join(distPath, 'index.html'));
+  });
+}
 
 // Health check route with caching
 app.get('/api/health', (req, res) => {
@@ -110,73 +211,45 @@ app.get('/', (req, res) => {
       health: '/api/health',
       test: '/api/test',
       players: '/api/players',
-      idcards: '/api/idcards'
+      idcards: '/api/idcards',
+      users: '/api/users'
     }
   });
+});
+
+// Favicon handler to prevent 500 errors on /favicon.ico
+app.get('/favicon.ico', (req, res) => {
+  res.status(204).end(); // No Content
 });
 
 // Error handling middleware
 app.use(errorHandler);
 
-// MongoDB Connection with optimized settings for 1500+ users
-const connectDB = async () => {
-  try {
-    const mongoURI = process.env.MONGODB_URI;
-    if (!process.env.MONGODB_URI) {
-      console.warn('⚠️  MONGODB_URI not set in .env, using local MongoDB.');
-    } else {
-      console.log('🌐 Using MongoDB URI from .env:', process.env.MONGODB_URI);
-    }
-    
-    // Optimized connection settings for high load
-    await mongoose.connect(mongoURI, {
-      maxPoolSize: 50, // Increased for 1500+ users
-      minPoolSize: 10,
-      serverSelectionTimeoutMS: 10000,
-      socketTimeoutMS: 60000,
-      bufferCommands: false,
-      maxIdleTimeMS: 30000,
-      retryWrites: true,
-      w: 'majority',
-      readPreference: 'secondaryPreferred', // Read from secondary for better performance
-    });
-    
-    console.log('✅ Connected to MongoDB successfully!');
-    
-    // Start server with optimized settings
+// Catch-all 404 handler (must be after all other routes)
+app.use((req, res) => {
+  res.status(404).json({ success: false, error: 'Not found' });
+});
+
+// Server startup logic for different environments
+
+// Only start the server if not in a serverless environment
+if (process.env.VERCEL !== '1') {
+  connectDB().then(() => {
     const server = app.listen(PORT, () => {
       console.log(`🚀 Server is running on port ${PORT}`);
       console.log(`📊 Optimized for 1500+ concurrent users`);
     });
-    
-    // Optional server tuning (you can keep or remove)
     server.maxConnections = 1000;
     server.keepAliveTimeout = 65000;
     server.headersTimeout = 66000;
-    
-  } catch (error) {
-    console.error('❌ MongoDB connection error:', error.message);
-  }
-};
-
-process.on('unhandledRejection', (err, promise) => {
-  console.error('Unhandled Rejection at:', promise, 'reason:', err);
-});
-
-process.on('uncaughtException', (err) => {
-  console.error('Uncaught Exception:', err);
-  process.exit(1);
-});
-
-process.on('SIGTERM', () => {
-  console.log('SIGTERM received, shutting down gracefully');
-  mongoose.connection.close(() => {
-    console.log('MongoDB connection closed');
-    process.exit(0);
+  }).catch(error => {
+    console.error('❌ Failed to start server:', error);
+    process.exit(1);
   });
-});
-
-connectDB();
+} else {
+  // For serverless, don't connect immediately, let the middleware handle it
+  console.log('🔄 Serverless mode: Database connection will be established on first request');
+}
 
 export default app;
 

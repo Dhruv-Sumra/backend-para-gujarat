@@ -1,0 +1,31 @@
+services:
+  - type: web
+    name: para-sports-fullstack
+    env: node
+    region: oregon
+    buildCommand: |
+      cd ../frontend && npm install && npm run build && cd ../backend && npm install && cd .. && cp -r frontend/dist backend/dist
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: MONGODB_URI
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: SENDER_EMAIL
+        sync: false
+      - key: EMAIL_PASSWORD
+        sync: false
+      - key: EMAIL_SERVICE
+        value: gmail
+    healthCheckPath: /api/health
+    autoDeploy: true
+    # Optional: persistent disk for uploads/idcards
+    disks:
+      - name: uploads-disk
+        mountPath: /backend/uploads
+        sizeGB: 2
+      - name: idcards-disk
+        mountPath: /backend/idcards
+        sizeGB: 2

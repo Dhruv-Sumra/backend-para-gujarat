@@ -130,7 +130,7 @@ router.post('/', upload.single('profilePhoto'), validatePlayerData, async (req, 
             if (player.profilePhoto) {
               const fs = await import('fs');
               const path = await import('path');
-              const photoPath = path.join(process.cwd(), 'backend', player.profilePhoto);
+              const photoPath = path.join(process.cwd(), player.profilePhoto);
               fs.unlink(photoPath, (err) => {
                 if (err) {
                   console.error('Error deleting profile photo:', err);
@@ -139,6 +139,8 @@ router.post('/', upload.single('profilePhoto'), validatePlayerData, async (req, 
                 }
               });
             }
+            
+            // Note: Email service will handle cleanup of both uploads and idcards folders
           } else {
             console.log('Email not sent:', emailResult?.error || 'Email service not configured');
           }
@@ -370,7 +372,7 @@ router.post('/:id/regenerate-idcard', async (req, res, next) => {
         if (player.profilePhoto) {
           const fs = await import('fs');
           const path = await import('path');
-          const photoPath = path.join(process.cwd(), 'backend', player.profilePhoto);
+          const photoPath = path.join(process.cwd(), player.profilePhoto);
           fs.unlink(photoPath, (err) => {
             if (err) {
               console.error('Error deleting profile photo:', err);
@@ -379,6 +381,8 @@ router.post('/:id/regenerate-idcard', async (req, res, next) => {
             }
           });
         }
+        
+        // Note: Email service will handle cleanup of both uploads and idcards folders
       } else {
         console.log('Email not sent:', emailResult?.error || 'Email service not configured');
       }
